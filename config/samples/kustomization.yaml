@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- quota_v1alpha1_resourcepool.yaml
+- quota_v1alpha1_resourcepool_amd64.yaml
+- quota_v1alpha1_departmentquota.yaml
+- quota_v1alpha1_elasticquotapolicy.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

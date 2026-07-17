@@ -1,0 +1,30 @@
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: DepartmentQuota
+metadata:
+  name: risk
+spec:
+  department: risk
+  namespaceSelector:
+    matchLabels:
+      quota.kgpp34.io/enforced: "true"
+      quota.kgpp34.io/department: risk
+  evictionPolicy: Deny
+  pools:
+  - name: arm64v8-kylin
+    baseQuota:
+      memory: 96Gi
+    maxQuota:
+      memory: 192Gi
+    weight: 100
+    targetUtilizationPercent: 80
+    growthHeadroomPercent: 20
+    reclaimAfter: 30m
+  - name: amd64-kylin
+    baseQuota:
+      memory: 96Gi
+    maxQuota:
+      memory: 192Gi
+    weight: 100
+    targetUtilizationPercent: 80
+    growthHeadroomPercent: 20
+    reclaimAfter: 30m

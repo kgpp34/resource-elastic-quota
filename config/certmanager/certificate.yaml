@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: serving-cert
+spec:
+  dnsNames:
+  - resource-elastic-quota-webhook-service.resource-elastic-quota-system.svc
+  - resource-elastic-quota-webhook-service.resource-elastic-quota-system.svc.cluster.local
+  issuerRef:
+    group: cert-manager.io
+    kind: Issuer
+    name: resource-elastic-quota-selfsigned-issuer
+  secretName: webhook-server-cert

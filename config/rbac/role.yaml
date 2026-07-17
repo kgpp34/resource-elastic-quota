@@ -1,0 +1,43 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - nodes
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - quota.kgpp34.io
+  resources:
+  - departmentquotas
+  - elasticquotapolicies
+  - resourcepools
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - quota.kgpp34.io
+  resources:
+  - departmentquotas/status
+  - elasticquotapolicies/status
+  - resourcepools/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: denied
+  namespace: quota-stage4-test
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: denied
+  template:
+    metadata:
+      labels:
+        app: denied
+        department: stage4
+        quota.kgpp34.io/resource-pool: stage4-amd64-kylin
+    spec:
+      nodeSelector:
+        nodetype.cks.io/arch: amd64
+        nodetype.cks.io/os: kylin
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            memory: 32Mi
+          limits:
+            memory: 512Mi

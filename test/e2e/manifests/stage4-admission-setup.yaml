@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quota-stage4-test
+  labels:
+    quota.kgpp34.io/enforced: "true"
+    quota.kgpp34.io/department: stage4
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ResourcePool
+metadata:
+  name: stage4-amd64-kylin
+spec:
+  nodeSelector:
+    matchLabels:
+      nodetype.cks.io/arch: amd64
+      nodetype.cks.io/os: kylin
+  capacityPolicy:
+    admissionRatio:
+      memory: "2.0"
+    entitlementRatio:
+      memory: "1.0"
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: DepartmentQuota
+metadata:
+  name: stage4
+spec:
+  department: stage4
+  namespaceSelector:
+    matchLabels:
+      quota.kgpp34.io/enforced: "true"
+      quota.kgpp34.io/department: stage4
+  evictionPolicy: Deny
+  pools:
+  - name: stage4-amd64-kylin
+    baseQuota:
+      memory: 1Gi
+    maxQuota:
+      memory: 3Gi
+    weight: 100
+    targetUtilizationPercent: 80
+    growthHeadroomPercent: 20
+    reclaimAfter: 10m
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ElasticQuotaPolicy
+metadata:
+  name: default
+spec:
+  resources:
+  - memory
+  allocation:
+    intervalSeconds: 1
+    maxIncreasePercent: 100
+    minIncrease:
+      memory: 512Mi
+    maxDecreasePercent: 25
+    cooldown: 30s
+    fullResync: 1s
+  pressure:
+    blockBorrowingOnNodeMemoryPressure: true
+    recoveryWindow: 30s
+  metrics:
+    enabled: false
+  admission:
+    mode: Enforce
+    maxSnapshotAge: 10s
+    failClosedOnStaleSnapshot: true
+    failClosedOnUnknownPool: true
+  eviction:
+    enabled: false
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: baseline
+  namespace: quota-stage4-test
+  labels:
+    department: stage4
+    quota.kgpp34.io/resource-pool: stage4-amd64-kylin
+spec:
+  nodeSelector:
+    nodetype.cks.io/arch: amd64
+    nodetype.cks.io/os: kylin
+  containers:
+  - name: pause
+    image: registry.k8s.io/pause:3.9
+    resources:
+      requests:
+        memory: 32Mi
+      limits:
+        memory: 512Mi

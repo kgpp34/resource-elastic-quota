@@ -1,0 +1,16 @@
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ResourcePool
+metadata:
+  name: arm64v8-kylin
+spec:
+  nodeSelector:
+    matchLabels:
+      nodetype.cks.io/arch: arm64v8
+      nodetype.cks.io/os: kylin
+  capacityPolicy:
+    reserve:
+      memory: 8Gi
+    admissionRatio:
+      memory: "1.5"
+    entitlementRatio:
+      memory: "2.0"

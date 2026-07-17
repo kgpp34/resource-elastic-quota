@@ -1,0 +1,36 @@
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ElasticQuotaPolicy
+metadata:
+  name: default
+spec:
+  resources:
+  - memory
+  allocation:
+    intervalSeconds: 30
+    maxIncreasePercent: 10
+    minIncrease:
+      memory: 1Gi
+    maxDecreasePercent: 10
+    cooldown: 2m
+    fullResync: 10m
+  pressure:
+    blockBorrowingOnNodeMemoryPressure: true
+    highWatermarkPercent: 85
+    severeWatermarkPercent: 95
+    recoveryWindow: 5m
+  metrics:
+    enabled: true
+    provider: MetricsAPI
+    collectionInterval: 30s
+    maxSampleAge: 2m
+  admission:
+    mode: Observe
+    maxSnapshotAge: 2m
+    failClosedOnStaleSnapshot: false
+    failClosedOnUnknownPool: false
+  eviction:
+    enabled: false
+    trigger: SevereNodePressure
+    sustainedFor: 10m
+    maxPodsPerCycle: 1
+    respectPDB: true

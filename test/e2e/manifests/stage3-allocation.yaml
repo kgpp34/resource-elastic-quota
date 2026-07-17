@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quota-stage3-a
+  labels:
+    quota.kgpp34.io/enforced: "true"
+    quota.kgpp34.io/department: stage3-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quota-stage3-b
+  labels:
+    quota.kgpp34.io/enforced: "true"
+    quota.kgpp34.io/department: stage3-b
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ResourcePool
+metadata:
+  name: stage3-arm64v8-kylin
+spec:
+  nodeSelector:
+    matchLabels:
+      nodetype.cks.io/arch: arm64v8
+      nodetype.cks.io/os: kylin
+  capacityPolicy:
+    reserve:
+      memory: 512Mi
+    admissionRatio:
+      memory: "1.5"
+    entitlementRatio:
+      memory: "1.0"
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ResourcePool
+metadata:
+  name: stage3-amd64-kylin
+spec:
+  nodeSelector:
+    matchLabels:
+      nodetype.cks.io/arch: amd64
+      nodetype.cks.io/os: kylin
+  capacityPolicy:
+    reserve:
+      memory: 512Mi
+    admissionRatio:
+      memory: "1.5"
+    entitlementRatio:
+      memory: "1.0"
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: DepartmentQuota
+metadata:
+  name: stage3-a
+spec:
+  department: stage3-a
+  namespaceSelector:
+    matchLabels:
+      quota.kgpp34.io/enforced: "true"
+      quota.kgpp34.io/department: stage3-a
+  evictionPolicy: Deny
+  pools:
+  - name: stage3-amd64-kylin
+    baseQuota:
+      memory: 1Gi
+    maxQuota:
+      memory: 6Gi
+    weight: 1
+    targetUtilizationPercent: 80
+    growthHeadroomPercent: 20
+    reclaimAfter: 10m
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: DepartmentQuota
+metadata:
+  name: stage3-b
+spec:
+  department: stage3-b
+  namespaceSelector:
+    matchLabels:
+      quota.kgpp34.io/enforced: "true"
+      quota.kgpp34.io/department: stage3-b
+  evictionPolicy: Deny
+  pools:
+  - name: stage3-amd64-kylin
+    baseQuota:
+      memory: 1Gi
+    maxQuota:
+      memory: 6Gi
+    weight: 3
+    targetUtilizationPercent: 80
+    growthHeadroomPercent: 20
+    reclaimAfter: 10m
+---
+apiVersion: quota.kgpp34.io/v1alpha1
+kind: ElasticQuotaPolicy
+metadata:
+  name: default
+spec:
+  resources:
+  - memory
+  allocation:
+    intervalSeconds: 5
+    maxIncreasePercent: 50
+    minIncrease:
+      memory: 512Mi
+    maxDecreasePercent: 25
+    cooldown: 30s
+    fullResync: 5s
+  pressure:
+    blockBorrowingOnNodeMemoryPressure: true
+    highWatermarkPercent: 85
+    severeWatermarkPercent: 95
+    recoveryWindow: 30s
+  metrics:
+    enabled: false
+  admission:
+    mode: Observe
+  eviction:
+    enabled: false
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allocation-a
+  namespace: quota-stage3-a
+  labels:
+    department: stage3-a
+    quota.kgpp34.io/resource-pool: stage3-amd64-kylin
+spec:
+  nodeName: dev-worker
+  containers:
+  - name: pause
+    image: registry.k8s.io/pause:3.9
+    resources:
+      requests:
+        memory: 32Mi
+      limits:
+        memory: 2Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: allocation-b
+  namespace: quota-stage3-b
+  labels:
+    department: stage3-b
+    quota.kgpp34.io/resource-pool: stage3-amd64-kylin
+spec:
+  nodeName: dev-worker
+  containers:
+  - name: pause
+    image: registry.k8s.io/pause:3.9
+    resources:
+      requests:
+        memory: 32Mi
+      limits:
+        memory: 4Gi

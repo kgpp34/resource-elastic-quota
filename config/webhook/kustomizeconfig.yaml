@@ -1,0 +1,15 @@
+nameReference:
+- kind: Service
+  version: v1
+  fieldSpecs:
+  - group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    path: webhooks/clientConfig/service/name
+
+namespace:
+- group: admissionregistration.k8s.io
+  version: v1
+  kind: ValidatingWebhookConfiguration
+  path: webhooks/clientConfig/service/namespace
+  create: true
