@@ -22,10 +22,6 @@ import (
 	"sort"
 	"time"
 
-	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
-	"kgpp34.com/resource-elastic-quota/internal/accounting"
-	"kgpp34.com/resource-elastic-quota/internal/allocation"
-	"kgpp34.com/resource-elastic-quota/internal/quota"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +29,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
+	"kgpp34.com/resource-elastic-quota/internal/accounting"
+	"kgpp34.com/resource-elastic-quota/internal/allocation"
+	"kgpp34.com/resource-elastic-quota/internal/observability"
+	"kgpp34.com/resource-elastic-quota/internal/quota"
+	"kgpp34.com/resource-elastic-quota/internal/usage"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,9 +46,16 @@ import (
 
 const (
 	// DefaultPolicyName is the singleton policy reconciled by all cluster events.
-	DefaultPolicyName = "default"
-	defaultFullResync = 5 * time.Minute
+	DefaultPolicyName   = "default"
+	defaultFullResync   = 5 * time.Minute
+	defaultMaxSampleAge = 2 * time.Minute
 )
+
+type usageCollectionHealth struct {
+	healthy bool
+	reason  string
+	message string
+}
 
 // ElasticQuotaPolicyReconciler rebuilds cluster accounting and publishes it to
 // ResourcePool and DepartmentQuota status.
@@ -54,6 +63,8 @@ type ElasticQuotaPolicyReconciler struct {
 	client.Client
 	FullResyncInterval time.Duration
 	Now                func() time.Time
+	Usage              *usage.Cache
+	Telemetry          *observability.Metrics
 }
 
 // Reconcile performs one synchronous full calculation. controller-runtime owns
@@ -61,7 +72,13 @@ type ElasticQuotaPolicyReconciler struct {
 func (r *ElasticQuotaPolicyReconciler) Reconcile(
 	ctx context.Context,
 	request ctrl.Request,
-) (ctrl.Result, error) {
+) (result ctrl.Result, reconcileErr error) {
+	started := time.Now()
+	defer func() {
+		if r.Telemetry != nil {
+			r.Telemetry.ObserveReconcile(started, reconcileErr)
+		}
+	}()
 	if request.Name != DefaultPolicyName {
 		return ctrl.Result{}, nil
 	}
@@ -109,6 +126,15 @@ func (r *ElasticQuotaPolicyReconciler) Reconcile(
 	}
 
 	calculationTime := r.now()
+	usageSnapshot, usageHealth := r.collectUsage(
+		ctx,
+		policy,
+		resourcePools.Items,
+		nodes.Items,
+		namespaces.Items,
+		pods.Items,
+		calculationTime,
+	)
 	allocationPlan, err := allocation.Calculate(
 		*policy,
 		resourcePools.Items,
@@ -133,13 +159,29 @@ func (r *ElasticQuotaPolicyReconciler) Reconcile(
 		resourcePools.Items,
 		namespaces.Items,
 		snapshot,
+		usageSnapshot,
 		allocationPlan,
 		now,
 	); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.patchPolicySuccess(ctx, policy, snapshot.Diagnostics(), now); err != nil {
+	if err := r.patchPolicySuccess(ctx, policy, snapshot.Diagnostics(), usageHealth, now); err != nil {
 		return ctrl.Result{}, err
+	}
+	if r.Telemetry != nil {
+		poolUsage := make(map[string]corev1.ResourceList)
+		for _, item := range usageSnapshot.Pools() {
+			poolUsage[item.Pool] = item.ObservedUsage
+		}
+		r.Telemetry.Publish(
+			resourcePools.Items,
+			departmentQuotas.Items,
+			poolUsage,
+			snapshot.Diagnostics(),
+			usageHealth.healthy,
+			usageSnapshot.NewestSampleTime(),
+			calculationTime,
+		)
 	}
 
 	return ctrl.Result{RequeueAfter: r.fullResyncInterval(policy)}, nil
@@ -160,6 +202,82 @@ func (r *ElasticQuotaPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Watches(&source.Kind{Type: &quotav1alpha1.ResourcePool{}}, mapToDefaultPolicy, generationChanged).
 		Watches(&source.Kind{Type: &quotav1alpha1.DepartmentQuota{}}, mapToDefaultPolicy, generationChanged).
 		Complete(r)
+}
+
+func (r *ElasticQuotaPolicyReconciler) collectUsage(
+	ctx context.Context,
+	policy *quotav1alpha1.ElasticQuotaPolicy,
+	resourcePools []quotav1alpha1.ResourcePool,
+	nodes []corev1.Node,
+	namespaces []corev1.Namespace,
+	pods []corev1.Pod,
+	now time.Time,
+) (accounting.UsageSnapshot, usageCollectionHealth) {
+	if !policy.Spec.Metrics.Enabled {
+		return accounting.UsageSnapshot{}, usageCollectionHealth{
+			healthy: true,
+			reason:  "CollectionDisabled",
+			message: "actual usage collection is disabled; limit accounting remains active",
+		}
+	}
+	provider := policy.Spec.Metrics.Provider
+	if provider == "" {
+		provider = quotav1alpha1.MetricsProviderMetricsAPI
+	}
+	if provider != quotav1alpha1.MetricsProviderMetricsAPI {
+		return accounting.UsageSnapshot{}, usageCollectionHealth{
+			reason:  "UnsupportedProvider",
+			message: fmt.Sprintf("metrics provider %q is not implemented in this release", provider),
+		}
+	}
+	if r.Usage == nil {
+		return accounting.UsageSnapshot{}, usageCollectionHealth{
+			reason:  "CollectorUnavailable",
+			message: "Metrics API collector is not configured",
+		}
+	}
+	samples, _, collectionErr := r.Usage.Get(
+		ctx,
+		now,
+		policy.Spec.Metrics.CollectionInterval.Duration,
+	)
+	snapshot, calculationErr := accounting.CalculateObservedUsage(
+		resourcePools,
+		nodes,
+		namespaces,
+		pods,
+		samples,
+	)
+	if calculationErr != nil {
+		return accounting.UsageSnapshot{}, usageCollectionHealth{
+			reason:  "ProjectionFailed",
+			message: calculationErr.Error(),
+		}
+	}
+	if collectionErr != nil {
+		return snapshot, usageCollectionHealth{
+			reason:  "CollectionFailed",
+			message: collectionErr.Error(),
+		}
+	}
+	newest := snapshot.NewestSampleTime()
+	if newest != nil {
+		maxAge := policy.Spec.Metrics.MaxSampleAge.Duration
+		if maxAge <= 0 {
+			maxAge = defaultMaxSampleAge
+		}
+		if age := now.Sub(*newest); age > maxAge {
+			return snapshot, usageCollectionHealth{
+				reason:  "SamplesStale",
+				message: fmt.Sprintf("newest included Metrics API sample is %s old", age.Round(time.Second)),
+			}
+		}
+	}
+	return snapshot, usageCollectionHealth{
+		healthy: true,
+		reason:  "CollectionSucceeded",
+		message: fmt.Sprintf("collected %d current Pod memory samples", snapshot.SampleCount()),
+	}
 }
 
 func (r *ElasticQuotaPolicyReconciler) patchResourcePools(
@@ -283,6 +401,7 @@ func (r *ElasticQuotaPolicyReconciler) patchDepartmentQuotas(
 	resourcePools []quotav1alpha1.ResourcePool,
 	namespaces []corev1.Namespace,
 	snapshot accounting.Snapshot,
+	usageSnapshot accounting.UsageSnapshot,
 	allocationPlan allocation.Plan,
 	now metav1.Time,
 ) error {
@@ -301,6 +420,14 @@ func (r *ElasticQuotaPolicyReconciler) patchDepartmentQuotas(
 		}
 		allocatedByDepartment[departmentPool.Department][departmentPool.Pool] =
 			quota.Clone(departmentPool.AllocatedLimits)
+	}
+	observedByDepartment := make(map[string]map[string]corev1.ResourceList)
+	for _, departmentPool := range usageSnapshot.DepartmentPools() {
+		if observedByDepartment[departmentPool.Department] == nil {
+			observedByDepartment[departmentPool.Department] = make(map[string]corev1.ResourceList)
+		}
+		observedByDepartment[departmentPool.Department][departmentPool.Pool] =
+			quota.Clone(departmentPool.ObservedUsage)
 	}
 
 	for i := range departmentQuotas {
@@ -330,6 +457,7 @@ func (r *ElasticQuotaPolicyReconciler) patchDepartmentQuotas(
 			departmentQuota.Name,
 			configuredPools,
 			allocated,
+			observedByDepartment[departmentQuota.Spec.Department],
 			allocationPlan,
 		)
 
@@ -408,6 +536,7 @@ func mergeDepartmentPoolStatus(
 	departmentQuotaName string,
 	configuredPools map[string]struct{},
 	allocated map[string]corev1.ResourceList,
+	observed map[string]corev1.ResourceList,
 	allocationPlan allocation.Plan,
 ) []quotav1alpha1.DepartmentPoolQuotaStatus {
 	currentByName := make(map[string]quotav1alpha1.DepartmentPoolQuotaStatus, len(current))
@@ -427,6 +556,7 @@ func mergeDepartmentPoolStatus(
 		status := currentByName[poolName]
 		status.Name = poolName
 		status.AllocatedLimits = quota.Clone(allocated[poolName])
+		status.ObservedUsage = quota.Clone(observed[poolName])
 		if planned, exists := allocationPlan.Department(departmentQuotaName, poolName); exists {
 			status.EffectiveQuota = quota.Clone(planned.EffectiveQuota)
 			status.Borrowed = quota.Clone(planned.Borrowed)
@@ -512,6 +642,7 @@ func (r *ElasticQuotaPolicyReconciler) patchPolicySuccess(
 	ctx context.Context,
 	policy *quotav1alpha1.ElasticQuotaPolicy,
 	diagnostics accounting.Diagnostics,
+	usageHealth usageCollectionHealth,
 	now metav1.Time,
 ) error {
 	original := policy.DeepCopy()
@@ -522,6 +653,18 @@ func (r *ElasticQuotaPolicyReconciler) patchPolicySuccess(
 		Status:             metav1.ConditionTrue,
 		Reason:             "CalculationSucceeded",
 		Message:            "resource accounting calculation completed",
+		ObservedGeneration: policy.Generation,
+		LastTransitionTime: now,
+	})
+	metricsStatus := metav1.ConditionFalse
+	if !usageHealth.healthy {
+		metricsStatus = metav1.ConditionTrue
+	}
+	setCondition(&policy.Status.Conditions, metav1.Condition{
+		Type:               "MetricsDegraded",
+		Status:             metricsStatus,
+		Reason:             usageHealth.reason,
+		Message:            usageHealth.message,
 		ObservedGeneration: policy.Generation,
 		LastTransitionTime: now,
 	})

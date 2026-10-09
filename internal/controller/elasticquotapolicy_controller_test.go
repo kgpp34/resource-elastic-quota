@@ -21,16 +21,16 @@ import (
 	"testing"
 	"time"
 
-	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
-	"kgpp34.com/resource-elastic-quota/internal/accounting"
-	"kgpp34.com/resource-elastic-quota/internal/allocation"
-	"kgpp34.com/resource-elastic-quota/internal/quota"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
+	"kgpp34.com/resource-elastic-quota/internal/accounting"
+	"kgpp34.com/resource-elastic-quota/internal/allocation"
+	"kgpp34.com/resource-elastic-quota/internal/quota"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -247,6 +247,7 @@ func TestMergeDepartmentPoolStatusDropsStaleAndClearsUnplannedQuota(t *testing.T
 		current,
 		"department",
 		map[string]struct{}{"configured": {}},
+		nil,
 		nil,
 		allocation.Plan{},
 	)

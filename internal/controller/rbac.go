@@ -22,5 +22,6 @@ package controller
 
 // +kubebuilder:rbac:groups="",resources=nodes;namespaces;pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=metrics.k8s.io,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=quota.kgpp34.io,resources=resourcepools;departmentquotas;elasticquotapolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=quota.kgpp34.io,resources=resourcepools/status;departmentquotas/status;elasticquotapolicies/status,verbs=get;update;patch

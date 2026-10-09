@@ -21,13 +21,14 @@ package accounting
 import (
 	"fmt"
 	"sort"
+	"time"
 
-	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
-	"kgpp34.com/resource-elastic-quota/internal/quota"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
+	"kgpp34.com/resource-elastic-quota/internal/quota"
 )
 
 const (
@@ -54,6 +55,76 @@ type DepartmentPool struct {
 	Department      string
 	Pool            string
 	AllocatedLimits corev1.ResourceList
+}
+
+// PodUsageSample contains one metrics-server memory sample. Namespace and Name
+// identify the Pod whose placement and trusted department are resolved from the
+// Kubernetes object snapshot rather than from metrics labels.
+type PodUsageSample struct {
+	Namespace string
+	Name      string
+	Timestamp time.Time
+	Memory    resource.Quantity
+}
+
+// PoolUsage contains observed memory usage for all sampled Pods in one pool.
+type PoolUsage struct {
+	Pool          string
+	ObservedUsage corev1.ResourceList
+}
+
+// DepartmentPoolUsage contains observed memory usage for one department and pool.
+type DepartmentPoolUsage struct {
+	Department    string
+	Pool          string
+	ObservedUsage corev1.ResourceList
+}
+
+// UsageSnapshot is an immutable-by-convention projection of metrics samples.
+type UsageSnapshot struct {
+	pools       []PoolUsage
+	departments []DepartmentPoolUsage
+	newest      *time.Time
+	sampleCount int
+}
+
+// Pools returns a deep copy sorted by pool name.
+func (s UsageSnapshot) Pools() []PoolUsage {
+	result := make([]PoolUsage, len(s.pools))
+	for i := range s.pools {
+		result[i] = PoolUsage{
+			Pool:          s.pools[i].Pool,
+			ObservedUsage: quota.Clone(s.pools[i].ObservedUsage),
+		}
+	}
+	return result
+}
+
+// DepartmentPools returns a deep copy sorted by department and pool name.
+func (s UsageSnapshot) DepartmentPools() []DepartmentPoolUsage {
+	result := make([]DepartmentPoolUsage, len(s.departments))
+	for i := range s.departments {
+		result[i] = DepartmentPoolUsage{
+			Department:    s.departments[i].Department,
+			Pool:          s.departments[i].Pool,
+			ObservedUsage: quota.Clone(s.departments[i].ObservedUsage),
+		}
+	}
+	return result
+}
+
+// NewestSampleTime returns the newest included metrics timestamp.
+func (s UsageSnapshot) NewestSampleTime() *time.Time {
+	if s.newest == nil {
+		return nil
+	}
+	result := *s.newest
+	return &result
+}
+
+// SampleCount returns the number of Pod samples included in the snapshot.
+func (s UsageSnapshot) SampleCount() int {
+	return s.sampleCount
 }
 
 // Diagnostics records data that could not be classified without weakening
@@ -202,6 +273,86 @@ func Calculate(
 	}
 
 	return newSnapshot(classification, departmentLimits), nil
+}
+
+// CalculateObservedUsage attributes metrics-server samples using the same
+// trusted Namespace and actual-node rules as strict limits accounting. Samples
+// without a live, non-terminal Pod or a resolvable pool are ignored.
+func CalculateObservedUsage(
+	resourcePools []quotav1alpha1.ResourcePool,
+	nodes []corev1.Node,
+	namespaces []corev1.Namespace,
+	pods []corev1.Pod,
+	samples []PodUsageSample,
+) (UsageSnapshot, error) {
+	selectors, err := compilePoolSelectors(resourcePools)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	classification := classifyNodes(selectors, nodes)
+	managedNamespaces, _ := classifyNamespaces(namespaces)
+	podsByKey := make(map[string]corev1.Pod, len(pods))
+	for i := range pods {
+		podsByKey[podKey(pods[i].Namespace, pods[i].Name)] = pods[i]
+	}
+
+	poolUsage := make(map[string]corev1.ResourceList)
+	departmentUsage := make(map[departmentPoolKey]corev1.ResourceList)
+	var newest *time.Time
+	included := 0
+	for i := range samples {
+		sample := samples[i]
+		pod, exists := podsByKey[podKey(sample.Namespace, sample.Name)]
+		if !exists || !ShouldCountPod(pod) || sample.Memory.Sign() < 0 {
+			continue
+		}
+		poolName, resolved := resolvePodPool(pod, &classification)
+		if !resolved {
+			continue
+		}
+		resources := corev1.ResourceList{corev1.ResourceMemory: sample.Memory.DeepCopy()}
+		poolUsage[poolName] = quota.Add(poolUsage[poolName], resources)
+		if department, managed := managedNamespaces[pod.Namespace]; managed {
+			key := departmentPoolKey{department: department, pool: poolName}
+			departmentUsage[key] = quota.Add(departmentUsage[key], resources)
+		}
+		if newest == nil || sample.Timestamp.After(*newest) {
+			timestamp := sample.Timestamp
+			newest = &timestamp
+		}
+		included++
+	}
+
+	pools := make([]PoolUsage, 0, len(poolUsage))
+	for poolName, resources := range poolUsage {
+		pools = append(pools, PoolUsage{Pool: poolName, ObservedUsage: quota.Clone(resources)})
+	}
+	sort.Slice(pools, func(i, j int) bool { return pools[i].Pool < pools[j].Pool })
+
+	departments := make([]DepartmentPoolUsage, 0, len(departmentUsage))
+	for key, resources := range departmentUsage {
+		departments = append(departments, DepartmentPoolUsage{
+			Department:    key.department,
+			Pool:          key.pool,
+			ObservedUsage: quota.Clone(resources),
+		})
+	}
+	sort.Slice(departments, func(i, j int) bool {
+		if departments[i].Department == departments[j].Department {
+			return departments[i].Pool < departments[j].Pool
+		}
+		return departments[i].Department < departments[j].Department
+	})
+	return UsageSnapshot{
+		pools:       pools,
+		departments: departments,
+		newest:      newest,
+		sampleCount: included,
+	}, nil
+}
+
+func podKey(namespace, name string) string {
+	return namespace + "\x00" + name
 }
 
 type poolSelector struct {

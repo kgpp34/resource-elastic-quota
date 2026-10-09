@@ -55,18 +55,33 @@ type Handler struct {
 	projector Projector
 	now       func() time.Time
 	log       logr.Logger
+	recorder  AdmissionRecorder
+}
+
+// AdmissionRecorder is implemented by the optional Prometheus telemetry sink.
+type AdmissionRecorder interface {
+	ObserveAdmission(mode, result, reason string)
 }
 
 var _ admission.Handler = (*Handler)(nil)
 
 // NewHandler constructs an admission handler with explicit dependencies.
-func NewHandler(reader client.Reader, projector Projector, logger logr.Logger) *Handler {
-	return &Handler{
+func NewHandler(
+	reader client.Reader,
+	projector Projector,
+	logger logr.Logger,
+	recorders ...AdmissionRecorder,
+) *Handler {
+	handler := &Handler{
 		reader:    reader,
 		projector: projector,
 		now:       time.Now,
 		log:       logger,
 	}
+	if len(recorders) > 0 {
+		handler.recorder = recorders[0]
+	}
+	return handler
 }
 
 // Handle validates one admission request without mutating cluster state.
@@ -125,7 +140,30 @@ func (h *Handler) Handle(ctx context.Context, request admission.Request) admissi
 	if memoryValue(delta) > 0 {
 		issues = append(issues, h.validateQuota(ctx, department, newProjection.Pool, delta, policy)...)
 	}
-	return respond(mode, issues)
+	response := respond(mode, issues)
+	if h.recorder != nil {
+		result := "allowed"
+		reason := "within_quota"
+		if len(issues) > 0 {
+			reason = "validation_issue"
+			if mode == quotav1alpha1.AdmissionModeEnforce && hasBlockingIssue(issues) {
+				result = "denied"
+			} else if mode == quotav1alpha1.AdmissionModeWarn {
+				result = "warned"
+			}
+		}
+		h.recorder.ObserveAdmission(string(mode), result, reason)
+	}
+	return response
+}
+
+func hasBlockingIssue(issues []admissionIssue) bool {
+	for i := range issues {
+		if issues[i].blockInEnforce {
+			return true
+		}
+	}
+	return false
 }
 
 type admissionIssue struct {

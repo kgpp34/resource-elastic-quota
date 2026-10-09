@@ -2,7 +2,11 @@
 
 面向多部门、异构节点池的 Kubernetes 弹性内存 Limit 配额 Controller。
 
-英文架构与实施设计见 [`docs/design-and-implementation.md`](docs/design-and-implementation.md)。
+设计文档：
+
+- [英文架构与实施设计](docs/design-and-implementation.md)
+- [多集群全局配额控制器分层演进计划](docs/multi-cluster-global-quota-evolution-plan.md)
+- [运维与上线 Runbook](docs/operations-runbook.md)
 
 ## Description
 
@@ -41,6 +45,15 @@ make deploy IMG=<some-registry>/resource-elastic-quota:tag
 ```
 
 默认清单会创建 Webhook Service、ValidatingWebhookConfiguration、Certificate、Issuer、双副本 Deployment 和 PodDisruptionBudget。必须先确保 cert-manager 已就绪，否则 Webhook 证书和 CA bundle 不会生成。
+
+Prometheus 和 Grafana 不是运行依赖。没有它们时可直接验证原生指标：
+
+```sh
+kubectl -n resource-elastic-quota-system port-forward service/resource-elastic-quota-controller-manager-metrics-service 8080:8080
+curl --fail --silent http://127.0.0.1:8080/metrics | grep resource_elastic_quota
+```
+
+已有 Prometheus Operator 或 Grafana dashboard sidecar 时，可分别应用 `config/prometheus` 和 `config/grafana`；它们不会被默认安装。
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
 privileges or be logged in as admin.

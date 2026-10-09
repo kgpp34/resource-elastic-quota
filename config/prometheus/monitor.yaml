@@ -11,17 +11,62 @@ metadata:
 spec:
   endpoints:
     - path: /metrics
-      port: https # Ensure this is the name of the port that exposes HTTPS metrics
-      scheme: https
-      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-      tlsConfig:
-        # TODO(user): The option insecureSkipVerify: true is not recommended for production since it disables
-        # certificate verification, exposing the system to potential man-in-the-middle attacks.
-        # For production environments, it is recommended to use cert-manager for automatic TLS certificate management.
-        # To apply this configuration, enable cert-manager and use the patch located at config/prometheus/servicemonitor_tls_patch.yaml,
-        # which securely references the certificate from the 'metrics-server-cert' secret.
-        insecureSkipVerify: true
+      port: http
+      scheme: http
+      interval: 30s
   selector:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: resource-elastic-quota
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: resource-elastic-quota
+    app.kubernetes.io/managed-by: kustomize
+  name: controller-manager-alerts
+  namespace: system
+spec:
+  groups:
+    - name: resource-elastic-quota
+      rules:
+        - alert: ResourceElasticQuotaSnapshotStale
+          expr: resource_elastic_quota_snapshot_age_seconds > 180
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Resource quota accounting snapshot is stale
+            description: The latest successful limits snapshot is older than three minutes.
+        - alert: ResourceElasticQuotaMetricsAPIDegraded
+          expr: resource_elastic_quota_metrics_api_healthy == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Actual memory usage collection is degraded
+            description: Strict limits accounting and admission remain active; observed usage may be stale.
+        - alert: ResourceElasticQuotaDepartmentNearLimit
+          expr: resource_elastic_quota_department_allocated_limits_memory_bytes / resource_elastic_quota_department_effective_quota_memory_bytes > 0.9
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Department is near its effective memory quota
+            description: Department {{ $labels.department }} in pool {{ $labels.pool }} is above 90 percent.
+        - alert: ResourceElasticQuotaPoolNearAdmissionBudget
+          expr: resource_elastic_quota_pool_allocated_limits_memory_bytes / resource_elastic_quota_pool_admission_budget_memory_bytes > 0.9
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Resource pool is near its memory admission budget
+            description: Pool {{ $labels.pool }} is above 90 percent of the admission budget.
+        - alert: ResourceElasticQuotaReconcileErrors
+          expr: increase(resource_elastic_quota_reconcile_total{result="error"}[10m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Resource quota controller reconciliation is repeatedly failing

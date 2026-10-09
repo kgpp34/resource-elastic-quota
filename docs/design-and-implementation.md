@@ -424,19 +424,21 @@ Native ResourceQuota gives apiserver-level consistency only per Namespace. If ze
 Recommended metrics:
 
 ```text
-elastic_quota_pool_allocatable{pool,resource}
-elastic_quota_pool_admission_budget{pool,resource}
-elastic_quota_pool_allocated{pool,resource,type}
-elastic_quota_department_base_quota{department,pool,resource,type}
-elastic_quota_department_effective{department,pool,resource,type}
-elastic_quota_department_allocated{department,pool,resource,type}
-elastic_quota_department_observed_usage{department,pool,resource}
-elastic_quota_department_borrowed{department,pool,resource}
-elastic_quota_admission_requests_total{mode,result,resource,reason}
-elastic_quota_reconcile_duration_seconds
-elastic_quota_reconcile_errors_total{reason}
-elastic_quota_snapshot_age_seconds
-elastic_quota_pool_selector_conflicts_total
+resource_elastic_quota_pool_allocatable_memory_bytes{pool}
+resource_elastic_quota_pool_admission_budget_memory_bytes{pool}
+resource_elastic_quota_pool_allocated_limits_memory_bytes{pool}
+resource_elastic_quota_pool_observed_usage_memory_bytes{pool}
+resource_elastic_quota_department_base_quota_memory_bytes{department,pool}
+resource_elastic_quota_department_max_quota_memory_bytes{department,pool}
+resource_elastic_quota_department_effective_quota_memory_bytes{department,pool}
+resource_elastic_quota_department_allocated_limits_memory_bytes{department,pool}
+resource_elastic_quota_department_observed_usage_memory_bytes{department,pool}
+resource_elastic_quota_department_borrowed_memory_bytes{department,pool}
+resource_elastic_quota_admission_requests_total{mode,result,reason}
+resource_elastic_quota_reconcile_duration_seconds{result}
+resource_elastic_quota_reconcile_total{result}
+resource_elastic_quota_snapshot_age_seconds
+resource_elastic_quota_classification_issues{reason}
 ```
 
 Pod names and UIDs must not be metric labels. ResourcePool Conditions include Ready, SelectorOverlap, NoReadyNodes, BaseQuotaOversubscribed, AdmissionOverCapacity, and MemoryPressure. DepartmentQuota Conditions include Ready, OverQuota, OrphanedNamespace, UnknownResourcePool, PoolMismatch, and MetricsDegraded. Policy Conditions include Ready, SnapshotStale, ConfigurationInvalid, and MetricsDegraded. Relevant Events are rate limited.

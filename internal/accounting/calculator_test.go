@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
-	"kgpp34.com/resource-elastic-quota/internal/quota"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
+	"kgpp34.com/resource-elastic-quota/internal/quota"
 )
 
 func TestPodLimits(t *testing.T) {
@@ -227,6 +227,64 @@ func TestCalculateRejectsInvalidSelector(t *testing.T) {
 
 	if _, err := Calculate(pools, nil, nil, nil); err == nil {
 		t.Fatal("Calculate() should reject an invalid selector")
+	}
+}
+
+func TestCalculateObservedUsage(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	pools := []quotav1alpha1.ResourcePool{
+		resourcePool("arm", map[string]string{"arch": "arm64"}),
+		resourcePool("amd", map[string]string{"arch": "amd64"}),
+	}
+	nodes := []corev1.Node{
+		node("arm-node", map[string]string{"arch": "arm64"}, "8Gi", true, false),
+		node("amd-node", map[string]string{"arch": "amd64"}, "8Gi", true, false),
+	}
+	namespaces := []corev1.Namespace{
+		managedNamespace("business", "trading"),
+		{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}},
+	}
+	pods := []corev1.Pod{
+		pod("business", "scheduled", "arm-node", "amd", "4Gi", corev1.PodRunning),
+		pod("business", "pending", "", "amd", "2Gi", corev1.PodPending),
+		pod("kube-system", "system", "amd-node", "amd", "1Gi", corev1.PodRunning),
+		pod("business", "finished", "arm-node", "arm", "1Gi", corev1.PodSucceeded),
+	}
+	samples := []PodUsageSample{
+		{Namespace: "business", Name: "scheduled", Timestamp: now.Add(-time.Minute), Memory: resource.MustParse("1Gi")},
+		{Namespace: "business", Name: "pending", Timestamp: now, Memory: resource.MustParse("512Mi")},
+		{Namespace: "kube-system", Name: "system", Timestamp: now, Memory: resource.MustParse("256Mi")},
+		{Namespace: "business", Name: "finished", Timestamp: now, Memory: resource.MustParse("128Mi")},
+		{Namespace: "business", Name: "missing", Timestamp: now, Memory: resource.MustParse("1Gi")},
+	}
+
+	snapshot, err := CalculateObservedUsage(pools, nodes, namespaces, pods, samples)
+	if err != nil {
+		t.Fatalf("CalculateObservedUsage() error = %v", err)
+	}
+	if snapshot.SampleCount() != 3 {
+		t.Fatalf("SampleCount() = %d, want 3", snapshot.SampleCount())
+	}
+	if newest := snapshot.NewestSampleTime(); newest == nil || !newest.Equal(now) {
+		t.Fatalf("NewestSampleTime() = %v, want %v", newest, now)
+	}
+
+	poolUsage := make(map[string]corev1.ResourceList)
+	for _, usage := range snapshot.Pools() {
+		poolUsage[usage.Pool] = usage.ObservedUsage
+	}
+	assertMemory(t, poolUsage["arm"], "1Gi")
+	assertMemory(t, poolUsage["amd"], "768Mi")
+
+	departmentUsage := snapshot.DepartmentPools()
+	if len(departmentUsage) != 2 {
+		t.Fatalf("DepartmentPools() length = %d, want 2", len(departmentUsage))
+	}
+	assertMemory(t, departmentUsage[0].ObservedUsage, "512Mi")
+	assertMemory(t, departmentUsage[1].ObservedUsage, "1Gi")
+	if departmentUsage[0].Department != "trading" || departmentUsage[0].Pool != "amd" ||
+		departmentUsage[1].Department != "trading" || departmentUsage[1].Pool != "arm" {
+		t.Fatalf("DepartmentPools() = %+v, want trading/amd then trading/arm", departmentUsage)
 	}
 }
 

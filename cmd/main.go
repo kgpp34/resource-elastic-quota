@@ -20,16 +20,20 @@ import (
 	"flag"
 	"os"
 
-	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
-	"kgpp34.com/resource-elastic-quota/internal/controller"
-	quotawebhook "kgpp34.com/resource-elastic-quota/internal/webhook"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
+	quotav1alpha1 "kgpp34.com/resource-elastic-quota/api/v1alpha1"
+	"kgpp34.com/resource-elastic-quota/internal/controller"
+	"kgpp34.com/resource-elastic-quota/internal/observability"
+	"kgpp34.com/resource-elastic-quota/internal/usage"
+	quotawebhook "kgpp34.com/resource-elastic-quota/internal/webhook"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	controllermetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -67,7 +71,8 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	config := ctrl.GetConfigOrDie()
+	mgr, err := ctrl.NewManager(config, ctrl.Options{
 		Scheme:                 scheme,
 		MetricsBindAddress:     metricsAddr,
 		HealthProbeBindAddress: probeAddr,
@@ -80,9 +85,21 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	telemetry, err := observability.New(controllermetrics.Registry)
+	if err != nil {
+		setupLog.Error(err, "unable to register quota metrics")
+		os.Exit(1)
+	}
+	metricsClient, err := metricsclient.NewForConfig(config)
+	if err != nil {
+		setupLog.Error(err, "unable to create Metrics API client")
+		os.Exit(1)
+	}
 
 	if err := (&controller.ElasticQuotaPolicyReconciler{
-		Client: mgr.GetClient(),
+		Client:    mgr.GetClient(),
+		Usage:     usage.NewCache(usage.NewMetricsAPICollector(metricsClient)),
+		Telemetry: telemetry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create elastic quota policy controller")
 		os.Exit(1)
@@ -98,6 +115,7 @@ func main() {
 		mgr.GetClient(),
 		projector,
 		ctrl.Log.WithName("quota-admission"),
+		telemetry,
 	)
 	webhookServer := mgr.GetWebhookServer()
 	webhookServer.Register(
